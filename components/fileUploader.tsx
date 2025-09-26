@@ -20,12 +20,10 @@ export const FileUploader = () => {
       setUploadProgress(0);
       const formData = new FormData();
       formData.append('file', file);
+      const targetSize = '9';
       try{
-          await axios.post(`${process.env.REACT_APP_API_URL}/upload`, formData,{
-             headers:{
+          await axios.post(`http://localhost:3000/compressor?targetSize=${targetSize}`, formData,{
 
-                 'Content-type': ' multipart/form-data',
-             },
               onUploadProgress:(progressEvent)=>{
                  const progress = progressEvent.total ?
                      Math.round((progressEvent.loaded*100)/progressEvent.total)
