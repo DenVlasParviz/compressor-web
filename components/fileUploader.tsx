@@ -1,20 +1,118 @@
 "use client";
-import { ChangeEvent, useState } from "react";
+import {ChangeEvent, useEffect, useState} from "react";
 import axios from "axios";
+import {FFmpeg } from '@ffmpeg/ffmpeg'
+import { fetchFile, toBlobURL } from '@ffmpeg/util'
 import { CopyButton } from "@/components/ui/shadcn-io/copy-button/index";
+import {calculateVideoBitrateKbps} from "@/components/compression/bitrate";
+import {buildFfmpegArgs} from "@/components/compression/ffmpegArgs";
+import {defaultSettings} from "@/components/Types";
 
 export const FileUploader = () => {
+
+
   const [file, setFile] = useState<File | null>(null);
   const [link, setLink] = useState("");
-  type uploadStatus = "idle" | "uploading" | "success" | "error";
+  type uploadStatus = "idle" | "uploading" | "compressing"| "success" | "error";
   const [status, setStatus] = useState<uploadStatus>("idle");
+    const [ffmpeg, setFFmpeg] = useState<FFmpeg | null>(null);
+    const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+    const [progress, setProgress] = useState(0);
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     if (e.target.files) {
       setFile(e.target.files[0]);
     }
   }
+    useEffect(() => {
+        const loadFFmpegModule = async () => {
+            if (typeof window !== "undefined") {
+                const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+                setFFmpeg(new FFmpeg());
+            }
+        };
+        loadFFmpegModule();
+    }, []);
+
+    async function loadFFmpeg() {
+        if (!ffmpeg) return;
+
+        if (ffmpegLoaded) return;
+        await ffmpeg.load({
+            coreURL: '/ffmpeg-core.js',
+            wasmURL: '/ffmpeg-core.wasm',
+        });
+        setFfmpegLoaded(true);
+    }
+
+
+    async function getVideoDuration(file: File): Promise<number> {
+        return new Promise((resolve) => {
+            const url = URL.createObjectURL(file);
+            const video = document.createElement("video");
+            video.preload = "metadata";
+            video.src = url;
+            video.onloadedmetadata = () => {
+                const d = video.duration || 0;
+                URL.revokeObjectURL(url);
+                resolve(d);
+            };
+            video.onerror = () => {
+                URL.revokeObjectURL(url);
+                resolve(60);
+            };
+        });
+    }
+    async function handleCompress(){
+        if (!file || !ffmpeg) return;
+
+try{
+    setStatus("compressing");
+    setProgress(0);
+    await loadFFmpeg();
+
+    ffmpeg.on("progress", ({ progress: p }) => {
+        setProgress(Math.round(p * 100));
+    });
+    await ffmpeg.writeFile("input.mp4", await fetchFile(file));
+    const duration = await getVideoDuration(file);
+    const videoKbps = calculateVideoBitrateKbps({
+        targetMb: 9,
+        durationSec: duration,
+        audioKbps: 128,
+        safetyMargin: 0.95,
+        minVideoKbps: 200,
+    });
+  const args = buildFfmpegArgs(defaultSettings,videoKbps);
+  await ffmpeg.exec(args)
+
+    const data = await ffmpeg.readFile("output.mp4");
+    const compressedFile = new File(
+        [data.slice()],
+        `compressed-${Date.now()}.mp4`,
+        { type: "video/mp4" }
+    );
+    const sizeBytes = compressedFile.size;
+    const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(2);
+    const sizeKB = (sizeBytes / 1024).toFixed(0);
+    console.log(`✅ Compressed File Size: ${sizeBytes} Bytes`);
+    console.log(`✅ Compressed File Size: ${sizeMB} MB`);
+    await ffmpeg.deleteFile("input.mp4");
+    await ffmpeg.deleteFile("output.mp4");
+    setStatus("uploading");
+    const formData = new FormData();
+    formData.append("video", compressedFile);
+    const response = await axios.post(`${process.env.NEXT_PUBLIC_BOT_URL}/api/send-video`,formData,{
+    });
+    const fileUrl:string = response.data.fileUrl;
+    setLink(fileUrl)
+    setStatus("success");
+}catch(err){
+    console.error(err);
+    setStatus("error");
+}
+    }
 
   async function handleFileUpload() {
     if (!file) return;
@@ -87,7 +185,7 @@ export const FileUploader = () => {
       {/* Compress Button */}
       {file && status !== "uploading" && (
         <button
-          onClick={handleFileUpload}
+          onClick={handleCompress}
           className="px-12 py-4 bg-[#5865F2] hover:bg-[#4752C4] text-white font-semibold text-lg transform transition-all rounded-xl duration-300 hover:shadow-xl overflow-hidden hover:scale-105"
         >
           <div className="relative flex items-center justify-center gap-3">
@@ -119,6 +217,17 @@ export const FileUploader = () => {
           </div>
         </div>
       )}
+        {status === "compressing" && (
+            <div className="space-y-2">
+                <div className="h-2.5 w-full rounded-full bg-gray-200">
+                    <div
+                        className="h-2.5 rounded-full bg-blue-600 transition-all duration-300"
+                        style={{ width: `${progress}%` }}
+                    ></div>
+                    <p className="text-sm text-gray-600">{progress}% compressed</p>
+                </div>
+            </div>
+        )}
       <div>
         {status === "success" && (
           <p className="text-[#b9bbbe] text-sm font-medium">success</p>
